@@ -1,9 +1,12 @@
 package bkav.android.speech;
 
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.os.AsyncTask;
@@ -116,6 +119,40 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
         return mBinder;
     }
 
+    private AudioManager.OnAudioFocusChangeListener focusChangeListener =
+            new AudioManager.OnAudioFocusChangeListener() {
+                public void onAudioFocusChange(int focusChange) {
+                    switch (focusChange) {
+                        case (AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) :
+                            // Lower the volume while ducking.
+                            mPlayer.setVolume(0.2f, 0.2f);
+                            break;
+                        case (AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) :
+                        case (AudioManager.AUDIOFOCUS_LOSS) :
+                            pause();
+                            break;
+
+                        case (AudioManager.AUDIOFOCUS_GAIN) :
+                            // Return the volume to normal and resume if paused.
+                            mPlayer.setVolume(1f, 1f);
+                            play(new Intent());
+                            break;
+                        default: break;
+                    }
+                }
+            };
+
+    AudioAttributes playbackAttributes = new AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            .build();
+
+    AudioFocusRequest focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(playbackAttributes)
+            .setAcceptsDelayedFocusGain(true)
+            .setOnAudioFocusChangeListener(focusChangeListener)
+            .build();
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -130,15 +167,24 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
 
         mDefaultBitmap = BitmapFactory.decodeResource(getResources(),
                 R.drawable.ic_android);
+
+
     }
 
     //phuong thuc khoi tao lop mediaplayer
     public void initMusicPlayer() {
+        AudioManager audioManager =(AudioManager)getSystemService(Context.AUDIO_SERVICE);
+        int result = audioManager.requestAudioFocus(focusRequest/*,
+                // Use the music stream.
+                AudioManager.STREAM_MUSIC,
+                // Request permanent focus.
+                AudioManager.AUDIOFOCUS_GAIN*/);
+
         mPlayer = new MediaPlayer();
         //cau hinh phat nhac bang cach thiet lap thuoc tinh
         mPlayer.setWakeMode(getApplicationContext(),
                 PowerManager.PARTIAL_WAKE_LOCK);
-        mPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+        mPlayer.setAudioAttributes(playbackAttributes);
         // thiet lap onprepare khi doi tuong mediaplayre duoc chuan bi
         mPlayer.setOnPreparedListener(this);
         //thiet lap khi bai hat da phat xong
@@ -160,10 +206,11 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
                     pause();
                     break;
                 case ACTION_SEEK:
-                    System.out.println("ACTION_PAUSE");
+                    System.out.println("ACTION_SEEK");
                     seek(intent);
                     break;
                 case ACTION_RESET:
+                    System.out.println("ACTION_RESET");
                     reset();
                     break;
                 case ACTION_CLOSE:
@@ -288,6 +335,12 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
             return;
         }
 
+        AudioManager audioManager =(AudioManager)getSystemService(Context.AUDIO_SERVICE);
+        int result = audioManager.requestAudioFocus(focusRequest/*,
+                // Use the music stream.
+                AudioManager.STREAM_MUSIC,
+                // Request permanent focus.
+                AudioManager.AUDIOFOCUS_GAIN*/);
 
         SentenceInfo sentenceInfo = mCurrentSpeech.current();
 
@@ -493,8 +546,10 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
 
         @Override
         protected Void doInBackground(Void... voids) {
-            if (mInfo.mStatus == SentenceInfo.STATUS.DOWNLOADED)
+            if (mInfo.mStatus == SentenceInfo.STATUS.DOWNLOADED) {
+                isFinish = true;
                 return null;
+            }
             if (mInfo.isNeedRequest()) {
                 System.out.println("RequestSentenceTask mInfo.isNeedRequest " + this);
                 for (int i = 0; i < 5; i++) {
@@ -547,61 +602,6 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
             super.onPostExecute(aVoid);
             if (!mInfo.isNeedRequest())
                 mCallback.onAudioFileReady(mInfo);
-        }
-    }
-
-    static class RequestServerTask extends
-            AsyncTask<Void, SentenceInfo, Void> {
-        private ArrayList<SentenceInfo> mArr;
-        private RequestFinishCallback mCallback;
-
-        RequestServerTask(ArrayList<SentenceInfo> mArr, RequestFinishCallback callback) {
-            this.mArr = new ArrayList<>(mArr);
-            this.mCallback = callback;
-        }
-
-        @Override
-        protected Void doInBackground(Void... voids) {
-            while (!mArr.isEmpty()) {
-                SentenceInfo s = mArr.get(0);
-                if (s.isNeedRequest()) {
-                    try {
-                        boolean rs = requestServer(s);
-                        if (rs) {
-                            publishProgress(s);
-                            mArr.remove(s);
-                        } else {
-                            try {
-                                Thread.sleep(500);
-                            } catch (InterruptedException e1) {
-                                e1.printStackTrace();
-                            }
-                        }
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                        try {
-                            Thread.sleep(500);
-                        } catch (InterruptedException e1) {
-                            e1.printStackTrace();
-                        }
-                    }
-                }
-            }
-            return null;
-        }
-
-
-        @Override
-        protected void onProgressUpdate(SentenceInfo... values) {
-            super.onProgressUpdate(values);
-            int nextOrder = mCallback.onProcessFinish(values[0]);
-
-            for (SentenceInfo s : mArr)
-                if (s.mOrder == nextOrder) {
-                    mArr.remove(s);
-                    mArr.add(0, s);
-                    break;
-                }
         }
     }
 
@@ -766,21 +766,6 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
         return cachePath + File.separator + DISK_CACHE_SUBDIR + File.separator + string.hashCode();
     }
 
-
-    static class DownloadAudioFileTask extends AsyncTask<Void, Void, Void> {
-        private SentenceInfo mInfo;
-
-        public DownloadAudioFileTask(SentenceInfo mInfo) {
-            this.mInfo = mInfo;
-        }
-
-        @Override
-        protected Void doInBackground(Void... voids) {
-            downloadAudioFile(mInfo);
-            return null;
-        }
-
-    }
 
     private static void downloadAudioFile(SentenceInfo mInfo) {
         InputStream input = null;

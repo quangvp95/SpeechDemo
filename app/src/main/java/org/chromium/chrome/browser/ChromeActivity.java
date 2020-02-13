@@ -21,6 +21,7 @@ import java.util.regex.Pattern;
 
 import bkav.android.speech.SpeechManageService;
 
+import static bkav.android.speech.SpeechManageService.ACTION_CLOSE;
 import static bkav.android.speech.SpeechManageService.ACTION_PAUSE;
 import static bkav.android.speech.SpeechManageService.ACTION_PLAY;
 import static bkav.android.speech.SpeechManageService.ACTION_RESET;
@@ -176,45 +177,50 @@ public class ChromeActivity extends AppCompatActivity {
         startService(mPlayIntent);
     }
 
-    private IntentFilter mKeyboardFilter;
-    private KeyboardReceiver mKeyboardReceiver;
+    private IntentFilter mUpdateFilter;
+    private SpeechInfoReceiver mSpeechInfoReceiver;
 
     private void registerKeyboardReceiver() {
-        if (mKeyboardFilter == null)
-            mKeyboardFilter = new IntentFilter(ACTION_UPDATE);
-        if (mKeyboardReceiver == null)
-            mKeyboardReceiver = new KeyboardReceiver();
-        registerReceiver(mKeyboardReceiver, mKeyboardFilter);
+        if (mUpdateFilter == null)
+            mUpdateFilter = new IntentFilter(ACTION_UPDATE);
+        if (mSpeechInfoReceiver == null)
+            mSpeechInfoReceiver = new SpeechInfoReceiver();
+        registerReceiver(mSpeechInfoReceiver, mUpdateFilter);
     }
 
     private void unregisterKeyboardReceiver() {
-        if (mKeyboardFilter == null || mKeyboardReceiver == null)
+        if (mUpdateFilter == null || mSpeechInfoReceiver == null)
             return;
-        unregisterReceiver(mKeyboardReceiver);
+        unregisterReceiver(mSpeechInfoReceiver);
     }
 
     private int currentStart, currentEnd, currentDuration, currentPosition;
 
-    class KeyboardReceiver extends BroadcastReceiver {
+    class SpeechInfoReceiver extends BroadcastReceiver {
 
         @Override
         public void onReceive(Context context, Intent intent) {
-            currentDuration = intent.getIntExtra(DURATION_SENTENCE, 100);
-            currentStart = intent.getIntExtra(START_SENTENCE, 0);
-            currentEnd = intent.getIntExtra(END_SENTENCE, 100);
+            if (intent.getAction() == null)
+                return;
+            switch (intent.getAction()){
+                case ACTION_UPDATE:
+                    currentDuration = intent.getIntExtra(DURATION_SENTENCE, 100);
+                    currentStart = intent.getIntExtra(START_SENTENCE, 0);
+                    currentEnd = intent.getIntExtra(END_SENTENCE, 100);
 
-            int position = intent.getIntExtra(POSITION, 0);
-            mSeekBar.setProgress(position);
+                    int position = intent.getIntExtra(POSITION, 0);
+                    mSeekBar.setProgress(position);
 
-            currentPosition = (int) (1f * (position - currentStart) / (currentEnd - currentStart) * currentDuration);
-            int duration = intent.getIntExtra(DURATION, 100);
-            int minutes = duration / 60000;
-            if (minutes > 0)
-                mTextView.setText("Khoang " + minutes + " phut");
-            else if (duration > 0)
-                mTextView.setText("Khoang " + duration / 1000 + " giay");
-            handler.removeMessages(MSG_UPDATE_SEEKBAR);
-            handler.sendEmptyMessageDelayed(MSG_UPDATE_SEEKBAR, 500);
+                    currentPosition = (int) (1f * (position - currentStart) / (currentEnd - currentStart) * currentDuration);
+                    int duration = intent.getIntExtra(DURATION, 100);
+                    int minutes = duration / 60000;
+                    if (minutes > 0)
+                        mTextView.setText("Khoang " + minutes + " phut");
+                    else if (duration > 0)
+                        mTextView.setText("Khoang " + duration / 1000 + " giay");
+                    handler.runSeekbar();
+                    break;
+            }
         }
     }
 
@@ -260,9 +266,13 @@ public class ChromeActivity extends AppCompatActivity {
 //            if (msg.what == MSG_ID_OUT_OF_LOADING_TIME) {
 //                mWeakReference.get().checkLoadingOutOfTime();
 //            }
+            runSeekbar();
+            mWeakReference.get().updateSeekbar();
+        }
+
+        void runSeekbar() {
             removeMessages(MSG_UPDATE_SEEKBAR);
             sendEmptyMessageDelayed(MSG_UPDATE_SEEKBAR, 500);
-            mWeakReference.get().updateSeekbar();
         }
     }
 
