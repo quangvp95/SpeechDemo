@@ -31,6 +31,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
+import java.io.Serializable;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -63,12 +64,18 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
     public static final String TAB_ID = "tab_id";
     public static final String URL = "tab_url";
     public static final String TEXT = "speech_text";
+    public static final String DURATION = "duration";
+    public static final String POSITION = "position";
+    public static final String DURATION_SENTENCE = "duration_sentence";
+    public static final String START_SENTENCE = "start_sentence";
+    public static final String END_SENTENCE = "end_sentence";
 
     public static final String ACTION_PLAY = "bkav.android.speech.start";
     public static final String ACTION_PAUSE = "bkav.android.speech.pause";
     public static final String ACTION_SEEK = "bkav.android.speech.seek";
     public static final String ACTION_RESET = "bkav.android.speech.reset";
     public static final String ACTION_CLOSE = "bkav.android.speech.close";
+    public static final String ACTION_UPDATE = "bkav.android.speech.update";
 
     public static final int TIME_OUT = 3000;
 
@@ -96,6 +103,7 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
 
     private Bitmap mDefaultBitmap;
     private WaitServerReadyTask mWaitServerReadyTask;
+    private RequestSentenceTask mRequestSentenceTask;
 
     static String cachePath;
 
@@ -153,6 +161,7 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
                     break;
                 case ACTION_SEEK:
                     System.out.println("ACTION_PAUSE");
+                    seek(intent);
                     break;
                 case ACTION_RESET:
                     reset();
@@ -164,6 +173,39 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
             }
 
         return START_NOT_STICKY;
+    }
+
+    private void seek(Intent intent) {
+        int position = intent.getIntExtra(POSITION, -1);
+        if (position == -1) {
+            System.out.println("seek FAIL -1");
+            return;
+        }
+        ArrayList<SentenceInfo> mArr = mCurrentSpeech.mArr;
+        int i;
+        boolean check = false;
+        for (i = 0; i < mArr.size(); i++) {
+            if (position > mArr.get(i).mDuration) {
+                position -= mArr.get(i).mDuration;
+            } else {
+                check = true;
+                break;
+            }
+        }
+
+        // Khi chay het speech ma van khong den duoc postion thi khong tua nua
+        if (!check) {
+            System.out.println("seek FAIL");
+            updateTime();
+            return;
+        }
+
+        System.out.println("seek to " + i + ": "+position);
+        if (mPlayer.isPlaying())
+            mPlayer.pause();
+        mCurrentSpeech.mCurrentSentence = i;
+        mCurrentSpeech.mCurrentTime = position * 1f / mArr.get(i).mDuration;
+        queryNextSentence(mCurrentSpeech.current());
     }
 
     private void close() {
@@ -189,7 +231,7 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
             mPlayer.start();
         } else {
             mCurrentSpeech.mCurrentSentence = 0;
-            SentenceInfo sentenceInfo = mCurrentSpeech.mArr.get(0);
+            SentenceInfo sentenceInfo = mCurrentSpeech.get(0);
             try {
                 checkFileAudioReady(sentenceInfo);
             } catch (Exception e) {
@@ -208,7 +250,7 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
 
         if (!mPlayer.isPlaying()) return;
 
-        mCurrentSpeech.mCurrentTime = mPlayer.getCurrentPosition();
+        mCurrentSpeech.mCurrentTime = mPlayer.getCurrentPosition() * 1f / mPlayer.getDuration();
         mPlayer.pause();
         mNotificationController.updateNotification(mDefaultBitmap, "speech", false, FOREGROUND_ID);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -247,7 +289,7 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
         }
 
 
-        SentenceInfo sentenceInfo = mCurrentSpeech.mArr.get(mCurrentSpeech.mCurrentSentence);
+        SentenceInfo sentenceInfo = mCurrentSpeech.current();
 
         queryNextSentence(sentenceInfo);
 
@@ -289,14 +331,41 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
     @Override
     public void onPrepared(MediaPlayer mp) {
         System.out.println("onPrepared mCurrentSpeech.mCurrentSentence: " + mCurrentSpeech.mCurrentSentence);
-        mp.start();
-        mp.seekTo(mCurrentSpeech.mCurrentTime);
+        mCurrentSpeech.current().mPlayTime = mp.getDuration();
         mCurrentSpeech.mStatus = SpeechInfo.STATUS.READING;
+
+        updateTime();
+        mp.start();
+        mp.seekTo((int) (mCurrentSpeech.mCurrentTime * mCurrentSpeech.current().mPlayTime));
         startForeground(FOREGROUND_ID, mNotificationController.getSpeechNotification(mDefaultBitmap, "speech", true));
+    }
+
+    private void updateTime() {
+        int totalPlayTime = 0, position = 0, startDuration = 0;
+        ArrayList<SentenceInfo> mArr = mCurrentSpeech.mArr;
+        for (int i = 0; i < mArr.size(); i++) {
+            SentenceInfo sentenceInfo = mArr.get(i);
+            totalPlayTime += sentenceInfo.mPlayTime;
+            if (i < mCurrentSpeech.mCurrentSentence) {
+                startDuration += sentenceInfo.mDuration;
+                position += sentenceInfo.mDuration;
+            } else if (i == mCurrentSpeech.mCurrentSentence) {
+                position += (mCurrentSpeech.mCurrentTime * mCurrentSpeech.current().mDuration);
+            }
+        }
+        Intent intent = new Intent(ACTION_UPDATE);
+        intent.putExtra(DURATION, totalPlayTime);
+        intent.putExtra(DURATION_SENTENCE, mCurrentSpeech.current().mPlayTime);
+        intent.putExtra(POSITION, position); // vi tri tren progress bar
+        intent.putExtra(START_SENTENCE, startDuration); // vi tri tren progress bar
+        intent.putExtra(END_SENTENCE, startDuration  + mCurrentSpeech.current().mDuration); // vi tri tren progress bar
+        sendBroadcast(intent);
     }
 
     @Override
     public void onCompletion(MediaPlayer mp) {
+        if (mCurrentSpeech == null)
+            return;
         System.out.println("onCompletion mCurrentSpeech.mCurrentSentence: " + mCurrentSpeech.mCurrentSentence);
         mp.reset();
         mCurrentSpeech.mCurrentTime = 0;
@@ -313,13 +382,14 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
             }
         } else {
             mCurrentSpeech.mCurrentSentence = currentSentence;
-            SentenceInfo sentenceInfo = mCurrentSpeech.mArr.get(currentSentence);
-            if (sentenceInfo.isNeedRequest()) {
+            SentenceInfo sentenceInfo = mCurrentSpeech.get(currentSentence);
+            if (sentenceInfo.mStatus != SentenceInfo.STATUS.DOWNLOADED) {
 //                boolean rs = requestServer(sentenceInfo);
 //                if (!rs) {
                 System.out.println("onCompletion FALSE: " + sentenceInfo);
 //                    return;
 //                }
+                queryNextSentence(sentenceInfo);
                 return;
             }
             onAudioFileReady(sentenceInfo);
@@ -345,57 +415,78 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
         return mCurrentSpeech.mCurrentSentence;
     }
 
-    private void checkFileAudioReady(SentenceInfo sentenceInfo) throws Exception {
-        if (sentenceInfo.mStatus == SentenceInfo.STATUS.READY) {
+    private void checkFileAudioReady(SentenceInfo sentenceInfo) {
+        if (sentenceInfo.mStatus == SentenceInfo.STATUS.DOWNLOADED) {
             onAudioFileReady(sentenceInfo);
             return;
         }
 
-        if (mWaitServerReadyTask != null)
-            mWaitServerReadyTask.cancel(true);
-        mWaitServerReadyTask = new WaitServerReadyTask(sentenceInfo, this);
-        mWaitServerReadyTask.execute();
+        queryNextSentence(sentenceInfo);
+//        if (mWaitServerReadyTask != null)
+//            mWaitServerReadyTask.cancel(true);
+//        mWaitServerReadyTask = new WaitServerReadyTask(sentenceInfo, this);
+//        mWaitServerReadyTask.execute();
     }
 
     @Override
     public void onAudioFileReady(SentenceInfo sentenceInfo) {
+        if (!sentenceInfo.equals(mCurrentSpeech.current())) {
+            System.out.println("onAudioFileReady not equals");
+            return;
+        }
+        System.out.println("onAudioFileReady sentenceInfo " + sentenceInfo.mOrder);
+        mPlayer.reset();
+
         try {
-            mPlayer.reset();
 
 //            String filename = "android.resource://" + this.getPackageName() + "/raw/piano2";
 //            mPlayer.setDataSource(this, Uri.parse(filename));
 
 //            mPlayer.setDataSource(sentenceInfo.mAudioUrl);
 
-//            FileInputStream inputStream = new FileInputStream(sentenceInfo.mFile);
-//            mPlayer.setDataSource(inputStream.getFD());
-//            inputStream.close();
+            FileInputStream inputStream = new FileInputStream(sentenceInfo.mFile);
+            mPlayer.setDataSource(inputStream.getFD());
+            inputStream.close();
 
-            mPlayer.setDataSource(sentenceInfo.mFile.getAbsolutePath());
+//            mPlayer.setDataSource(sentenceInfo.mFile.getAbsolutePath());
 
             mPlayer.prepareAsync();
             mNotificationController.updateNotification(mDefaultBitmap, "speech", false, FOREGROUND_ID);
 
-            int nextSentence = mCurrentSpeech.mCurrentSentence + 1;
-            if (nextSentence >= mCurrentSpeech.mArr.size()) {
-                return;
-            }
-            queryNextSentence(mCurrentSpeech.mArr.get(nextSentence));
         } catch (IOException e) {
+            System.out.println("onAudioFileReady ERR " + sentenceInfo.mFile + " " + sentenceInfo.mFile);
             e.printStackTrace();
         }
+
+        int nextSentence = mCurrentSpeech.mCurrentSentence + 1;
+        if (nextSentence >= mCurrentSpeech.mArr.size()) {
+            return;
+        }
+        queryNextSentence(mCurrentSpeech.get(nextSentence));
     }
 
     void queryNextSentence(SentenceInfo mInfo) {
-        new RequestSentenceTask(mInfo, this).execute();
+        if (mRequestSentenceTask != null) {
+            if (mRequestSentenceTask.mInfo.equals(mInfo) && !mRequestSentenceTask.isFinish) {
+                System.out.println("queryNextSentence not cancel task" + mInfo.mOrder + " / " + mRequestSentenceTask.mInfo.mOrder);
+                return;
+            }
+            System.out.println("queryNextSentence cancel task" + mInfo.mOrder + " / " + mRequestSentenceTask.mInfo.mOrder + " | " + mRequestSentenceTask.isFinish);
+            if (!mRequestSentenceTask.isFinish)
+                mRequestSentenceTask.cancel(true);
+        }
+        System.out.println("queryNextSentence new: " + mInfo.mString);
+        mRequestSentenceTask = new RequestSentenceTask(mInfo, this);
+        mRequestSentenceTask.execute();
     }
 
     static class RequestSentenceTask extends
             AsyncTask<Void, Void, Void> {
         private SentenceInfo mInfo;
         private RequestFinishCallback mCallback;
+        private boolean isFinish = false;
 
-        public RequestSentenceTask(SentenceInfo mInfo, RequestFinishCallback mCallback) {
+        RequestSentenceTask(SentenceInfo mInfo, RequestFinishCallback mCallback) {
             this.mInfo = mInfo;
             this.mCallback = mCallback;
         }
@@ -405,6 +496,7 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
             if (mInfo.mStatus == SentenceInfo.STATUS.DOWNLOADED)
                 return null;
             if (mInfo.isNeedRequest()) {
+                System.out.println("RequestSentenceTask mInfo.isNeedRequest " + this);
                 for (int i = 0; i < 5; i++) {
                     try {
                         boolean rs = requestServer(mInfo);
@@ -423,23 +515,31 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
                     }
                 }
             }
-            if (mInfo.isNeedRequest())
+            if (mInfo.isNeedRequest()) {
+                System.out.println("RequestSentenceTask mInfo.isNeedRequest still null " + this);
+                isFinish = true;
                 return null;
+            }
 
+            System.out.println("RequestSentenceTask waiting.... timeForServerProcessInMillisecond" + this);
             // QuangNHe: Đợi server chuẩn bị file sẵn sàng
             try {
                 Thread.sleep(timeForServerProcessInMillisecond());
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
+            System.out.println("RequestSentenceTask waiting...." + this);
             waitServerReady(mInfo);
 
+            System.out.println("RequestSentenceTask downloading...." + this);
             downloadAudioFile(mInfo);
+            System.out.println("RequestSentenceTask DONE " + this);
+            isFinish = true;
             return null;
         }
 
         private int timeForServerProcessInMillisecond() {
-            return Math.max(mInfo.mString.length() * 1000 / 30, 500);
+            return /*Math.max(mInfo.mString.length() * 1000 / 30, 500)*/ 500;
         }
 
         @Override
@@ -560,7 +660,7 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
             info.mStatusUrl = jRoot.getString(STATUS_AUDIO_TAG);
             System.out.println(info.mStatusUrl + "");
 
-            info.mFile = getDiskCacheDir(info.mString);
+            info.mFile = getFile(info.mString);
         } else {
             System.out.println("6 - response is empty...");
 
@@ -659,11 +759,11 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
 
     private static final String DISK_CACHE_SUBDIR = "BITMAP_CACHE";
 
-    private static File getDiskCacheDir(String string) {
+    private static String getFile(String string) {
         // Check if media is mounted or storage is built-in, if so, try and use external cache dir
         // otherwise use internal cache dir
 
-        return new File(cachePath + File.separator + DISK_CACHE_SUBDIR + File.separator + string.hashCode()+".wav");
+        return cachePath + File.separator + DISK_CACHE_SUBDIR + File.separator + string.hashCode();
     }
 
 
@@ -690,6 +790,7 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
             URL url = new URL(mInfo.mAudioUrl);
             connection = (HttpURLConnection) url.openConnection();
             connection.connect();
+            connection.setReadTimeout(TIME_OUT);
 
             // expect HTTP 200 OK, so we don't mistakenly save error report
             // instead of the file
@@ -705,8 +806,9 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
 
             // download the file
             input = connection.getInputStream();
-            if (!mInfo.mFile.exists())
-                mInfo.mFile.getParentFile().mkdirs();
+            File file = new File(mInfo.mFile);
+            if (!file.exists())
+                file.getParentFile().mkdirs();
             output = new FileOutputStream(mInfo.mFile);
 
             byte[] data = new byte[4096];
@@ -742,7 +844,7 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
         ArrayList<SentenceInfo> mArr;
         String url;
         int mCurrentSentence = 0;
-        int mCurrentTime = 0;
+        float mCurrentTime = 0;
         STATUS mStatus = STATUS.PLAYABLE;
 
         enum STATUS {
@@ -753,15 +855,24 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
             this.mArr = mArr;
             this.url = url;
         }
+
+        SentenceInfo get(int index) {
+            return mArr.get(index);
+        }
+
+        SentenceInfo current() {
+            return mArr.get(mCurrentSentence);
+        }
     }
 
-    static class SentenceInfo {
+    static class SentenceInfo implements Serializable {
         String mString;
-        float mDuration;
+        int mDuration;
+        int mPlayTime;
         int mOrder;
         String mAudioUrl = "";
         String mStatusUrl = "";
-        File mFile;
+        String mFile;
         STATUS mStatus = STATUS.WAITING;
 
         enum STATUS {
@@ -772,11 +883,12 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
             this.mString = mString;
             this.mOrder = order;
             mDuration = getDurationFromSentence(mString);
+            mPlayTime = mDuration * 1000 / 5; // coi tốc độ đọc là 5 từ/s
             System.out.println("Order " + order + ": " + mString);
         }
 
         private int getDurationFromSentence(String text) {
-            return text.length() / 5;
+            return text.split(Pattern.quote(" ")).length;
         }
 
         boolean isNeedRequest() {
