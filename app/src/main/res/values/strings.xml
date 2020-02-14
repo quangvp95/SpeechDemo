@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">SpeechDemo</string>
+    <string name="about_minute">About %1$d minutes</string>
+    <string name="about_second">About %1$d seconds</string>
 </resources>

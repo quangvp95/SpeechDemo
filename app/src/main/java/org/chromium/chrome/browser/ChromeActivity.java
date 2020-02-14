@@ -19,9 +19,9 @@ import androidx.appcompat.app.AppCompatActivity;
 import java.lang.ref.WeakReference;
 import java.util.regex.Pattern;
 
+import bkav.android.speech.SpeechControlLayout;
 import bkav.android.speech.SpeechManageService;
 
-import static bkav.android.speech.SpeechManageService.ACTION_CLOSE;
 import static bkav.android.speech.SpeechManageService.ACTION_PAUSE;
 import static bkav.android.speech.SpeechManageService.ACTION_PLAY;
 import static bkav.android.speech.SpeechManageService.ACTION_RESET;
@@ -70,6 +70,7 @@ public class ChromeActivity extends AppCompatActivity {
     private SpeechManageService mBoundService;
     private SeekBar mSeekBar;
     private TextView mTextView;
+    private SpeechControlLayout mSpeechControlLayout;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -92,11 +93,29 @@ public class ChromeActivity extends AppCompatActivity {
 
             @Override
             public void onStopTrackingTouch(SeekBar seekBar) {
-                System.out.println("onStopTrackingTouch" + seekBar.getProgress());
-                Intent mPlayIntent = new Intent(ChromeActivity.this, SpeechManageService.class);
-                mPlayIntent.setAction(ACTION_SEEK);
-                mPlayIntent.putExtra(POSITION, seekBar.getProgress());
-                startService(mPlayIntent);
+                seek(mSeekBar.getProgress());
+            }
+        });
+        mSpeechControlLayout = findViewById(R.id.bkav_speech_controller_view);
+        mSpeechControlLayout.setListener(new SpeechControlLayout.OnControlSpeechListener() {
+            @Override
+            public void onPlay() {
+                click(null);
+            }
+
+            @Override
+            public void onPause() {
+                pause(null);
+            }
+
+            @Override
+            public void onReset() {
+                reset(null);
+            }
+
+            @Override
+            public void onSeek(int position) {
+                seek(position);
             }
         });
     }
@@ -159,6 +178,8 @@ public class ChromeActivity extends AppCompatActivity {
         mPlayIntent.putExtras(bundle);
 
         mSeekBar.setMax(ARTICLE.split(Pattern.quote(" ")).length);
+        mSpeechControlLayout.setMax(mSeekBar.getMax());
+        mSpeechControlLayout.setPlaying(true);
 
         startService(mPlayIntent);
         bindService(mPlayIntent, mConnection, Context.BIND_AUTO_CREATE);
@@ -169,11 +190,21 @@ public class ChromeActivity extends AppCompatActivity {
         mPlayIntent.setAction(ACTION_PAUSE);
         startService(mPlayIntent);
         handler.removeMessages(MSG_UPDATE_SEEKBAR);
+
+        mSpeechControlLayout.setPlaying(false);
     }
 
     public void reset(View view) {
         Intent mPlayIntent = new Intent(this, SpeechManageService.class);
         mPlayIntent.setAction(ACTION_RESET);
+        startService(mPlayIntent);
+    }
+
+    public void seek(int progress) {
+        System.out.println("onStopTrackingTouch" + progress);
+        Intent mPlayIntent = new Intent(ChromeActivity.this, SpeechManageService.class);
+        mPlayIntent.setAction(ACTION_SEEK);
+        mPlayIntent.putExtra(POSITION, progress);
         startService(mPlayIntent);
     }
 
@@ -209,6 +240,7 @@ public class ChromeActivity extends AppCompatActivity {
 
                 int position = intent.getIntExtra(POSITION, 0);
                 mSeekBar.setProgress(position);
+                mSpeechControlLayout.setPosition(position);
 
                 currentPosition = (int) (1f * (position - currentStart) / (currentEnd - currentStart) * currentDuration);
                 int duration = intent.getIntExtra(DURATION, 100);
@@ -217,6 +249,8 @@ public class ChromeActivity extends AppCompatActivity {
                     mTextView.setText("Khoang " + minutes + " phut");
                 else if (duration > 0)
                     mTextView.setText("Khoang " + duration / 1000 + " giay");
+
+                mSpeechControlLayout.setPlayTime(duration);
                 handler.runSeekbar();
             }
         }
@@ -230,6 +264,7 @@ public class ChromeActivity extends AppCompatActivity {
         int progress = (int) interpolate(currentStart, currentEnd, speed);
         System.out.println("ChromeActivity updateSeekbar " + progress + " - " + currentEnd);
         mSeekBar.setProgress(progress);
+        mSpeechControlLayout.setPosition(progress);
     }
 
     public static float interpolate(float value, float target, float speed) {
