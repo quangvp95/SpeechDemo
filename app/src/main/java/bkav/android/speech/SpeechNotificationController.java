@@ -13,7 +13,7 @@ import org.chromium.chrome.browser.ChromeActivity;
 import org.chromium.chrome.browser.R;
 
 
-class SpeechNotificationController{
+class SpeechNotificationController {
     private static final String SPEECH_CHANNEL_ID = "Chim Lac Speech Channel ID";
     private static final String SPEECH_CHANNEL_NAME = "Chim Lac Speech Channel";
     private static final String ACTION_SPEECH_REPLAY = SpeechManageService.ACTION_RESET;
@@ -23,11 +23,11 @@ class SpeechNotificationController{
 
     private Context mContext;
 
-    SpeechNotificationController(Context context){
+    SpeechNotificationController(Context context) {
         mContext = context;
     }
 
-    void createNotificationChannel(){
+    void createNotificationChannel() {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                     SPEECH_CHANNEL_ID,
@@ -44,11 +44,11 @@ class SpeechNotificationController{
 
     }
 
-    Notification getSpeechNotification(Bitmap favicon, String title, boolean isPlay){
+    Notification getSpeechNotification(Bitmap favicon, String title, boolean isPlay) {
         RemoteViews smallNotification = new RemoteViews(mContext.getPackageName(), R.layout.bkav_speech_notification_small);
-        setNotification(smallNotification,favicon,title,isPlay);
+        setNotification(smallNotification, favicon, title, isPlay);
         RemoteViews largeNotification = new RemoteViews(mContext.getPackageName(), R.layout.bkav_speech_notification_large);
-        setNotification(largeNotification,favicon,title,isPlay);
+        setNotification(largeNotification, favicon, title, isPlay);
         Intent intent = new Intent(mContext, ChromeActivity.class);
         PendingIntent pendingIntent = PendingIntent.getActivity(mContext, 0, intent, 0);
         Notification notification = null;
@@ -65,15 +65,15 @@ class SpeechNotificationController{
         return notification;
     }
 
-    private void setNotification(RemoteViews notification,Bitmap favicon, String title, boolean isPlay){
+    private void setNotification(RemoteViews notification, Bitmap favicon, String title, boolean isPlay) {
         Intent intentPlay;
         Intent intentReplay = new Intent(ACTION_SPEECH_REPLAY);
         Intent intentClose = new Intent(ACTION_SPEECH_CLOSE);
 
-        if(isPlay)
+        if (isPlay)
             intentPlay = new Intent(ACTION_SPEECH_PAUSE);
         else
-            intentPlay  = new Intent(ACTION_SPEECH_PLAY);
+            intentPlay = new Intent(ACTION_SPEECH_PLAY);
 
         notification.setTextViewText(R.id.title_speech_notification, title);
         notification.
@@ -113,7 +113,7 @@ class SpeechNotificationController{
 
     void updateNotification(Bitmap favicon, String title, boolean isPlay, int id) {
         NotificationManager manager = (NotificationManager) mContext.getSystemService(Context.NOTIFICATION_SERVICE);
-        Notification notification = getSpeechNotification(favicon,title, isPlay);
+        Notification notification = getSpeechNotification(favicon, title, isPlay);
         if (manager != null) {
             manager.notify(id, notification);
         }

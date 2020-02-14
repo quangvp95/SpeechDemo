@@ -202,24 +202,22 @@ public class ChromeActivity extends AppCompatActivity {
         public void onReceive(Context context, Intent intent) {
             if (intent.getAction() == null)
                 return;
-            switch (intent.getAction()){
-                case ACTION_UPDATE:
-                    currentDuration = intent.getIntExtra(DURATION_SENTENCE, 100);
-                    currentStart = intent.getIntExtra(START_SENTENCE, 0);
-                    currentEnd = intent.getIntExtra(END_SENTENCE, 100);
+            if (ACTION_UPDATE.equals(intent.getAction())) {
+                currentDuration = intent.getIntExtra(DURATION_SENTENCE, 100);
+                currentStart = intent.getIntExtra(START_SENTENCE, 0);
+                currentEnd = intent.getIntExtra(END_SENTENCE, 100);
 
-                    int position = intent.getIntExtra(POSITION, 0);
-                    mSeekBar.setProgress(position);
+                int position = intent.getIntExtra(POSITION, 0);
+                mSeekBar.setProgress(position);
 
-                    currentPosition = (int) (1f * (position - currentStart) / (currentEnd - currentStart) * currentDuration);
-                    int duration = intent.getIntExtra(DURATION, 100);
-                    int minutes = duration / 60000;
-                    if (minutes > 0)
-                        mTextView.setText("Khoang " + minutes + " phut");
-                    else if (duration > 0)
-                        mTextView.setText("Khoang " + duration / 1000 + " giay");
-                    handler.runSeekbar();
-                    break;
+                currentPosition = (int) (1f * (position - currentStart) / (currentEnd - currentStart) * currentDuration);
+                int duration = intent.getIntExtra(DURATION, 100);
+                int minutes = duration / 60000;
+                if (minutes > 0)
+                    mTextView.setText("Khoang " + minutes + " phut");
+                else if (duration > 0)
+                    mTextView.setText("Khoang " + duration / 1000 + " giay");
+                handler.runSeekbar();
             }
         }
     }

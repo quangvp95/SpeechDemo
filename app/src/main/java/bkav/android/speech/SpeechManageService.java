@@ -46,12 +46,6 @@ import javax.net.ssl.HttpsURLConnection;
 
 import static android.os.Environment.isExternalStorageRemovable;
 
-interface RequestFinishCallback {
-    int onProcessFinish(SpeechManageService.SentenceInfo sentenceInfo);
-
-    void onAudioFileReady(SpeechManageService.SentenceInfo sentenceInfo);
-}
-
 /**
  * QuangNHe: Luồng request
  * <p>
@@ -94,24 +88,231 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
 
     private static final String EXISTS_VALUE = "exists";
 
+    private static final String DISK_CACHE_SUBDIR = "BITMAP_CACHE";
+    static String sCachePath;
+
     private final IBinder mBinder = new LocalBinder();
-
     private SparseArray<SpeechInfo> mInfoArray = new SparseArray<>();
-
     private MediaPlayer mPlayer;
-
     private SpeechNotificationController mNotificationController;
-
     private SpeechInfo mCurrentSpeech;
-
     private Bitmap mDefaultBitmap;
-    private WaitServerReadyTask mWaitServerReadyTask;
     private RequestSentenceTask mRequestSentenceTask;
 
-    static String cachePath;
+    private AudioAttributes mPlaybackAttributes = new AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            .build();
+    private AudioManager.OnAudioFocusChangeListener mFocusChangeListener =
+            new AudioManager.OnAudioFocusChangeListener() {
+                public void onAudioFocusChange(int focusChange) {
+                    if (mPlayer == null) return;
+                    switch (focusChange) {
+                        case (AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK):
+                            // Lower the volume while ducking.
+                            mPlayer.setVolume(0.2f, 0.2f);
+                            break;
+                        case (AudioManager.AUDIOFOCUS_LOSS_TRANSIENT):
+                        case (AudioManager.AUDIOFOCUS_LOSS):
+                            pause();
+                            break;
+
+                        case (AudioManager.AUDIOFOCUS_GAIN):
+                            // Return the volume to normal and resume if paused.
+                            mPlayer.setVolume(1f, 1f);
+                            play(new Intent());
+                            break;
+                        default:
+                            break;
+                    }
+                }
+            };
+    private AudioFocusRequest mFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(mPlaybackAttributes)
+            .setAcceptsDelayedFocusGain(true)
+            .setOnAudioFocusChangeListener(mFocusChangeListener)
+            .build();
 
     public SpeechManageService() {
         super();
+    }
+
+    private static boolean requestServer(SentenceInfo info) throws IOException, JSONException {
+        OutputStream out;
+
+        java.net.URL url = new URL(SERVER_URL);
+        HttpURLConnection urlConnection = (HttpURLConnection) url.openConnection();
+        urlConnection.setRequestMethod("POST");
+        urlConnection.setReadTimeout(TIME_OUT);
+        urlConnection.setConnectTimeout(TIME_OUT);
+        urlConnection.setDoInput(true);
+        urlConnection.setDoOutput(true);
+
+        urlConnection.setRequestProperty("Content-Type", "application/json");
+
+        JSONObject root = new JSONObject();
+        root.put(TEXT_TAG, info.mString);
+        String data = root.toString();
+
+        System.out.println("12 - urlConnection : " + urlConnection);
+        out = new BufferedOutputStream(urlConnection.getOutputStream());
+
+        BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(out, StandardCharsets.UTF_8));
+        writer.write(data);
+        writer.flush();
+        writer.close();
+        out.close();
+
+        // QuangNhe: Lấy dữ liệu trả về
+        int responseCode = urlConnection.getResponseCode();
+        StringBuilder response = new StringBuilder();
+
+        System.out.println("13 - responseCode : " + responseCode);
+
+        if (responseCode == HttpsURLConnection.HTTP_OK) {
+            System.out.println("14 - HTTP_OK");
+
+            String line;
+            BufferedReader br = new BufferedReader(new InputStreamReader(
+                    urlConnection.getInputStream()));
+            while ((line = br.readLine()) != null) {
+                response.append(line);
+            }
+            br.close();
+        }
+
+        if (!response.toString().equalsIgnoreCase("")) {
+            System.out.println("6 - response !empty...");
+            //
+            JSONObject jRoot = new JSONObject(response.toString());
+
+            info.mAudioUrl = jRoot.getString(LINK_AUDIO_TAG);
+            System.out.println(info.mAudioUrl + "");
+
+            info.mStatusUrl = jRoot.getString(STATUS_AUDIO_TAG);
+            System.out.println(info.mStatusUrl + "");
+
+            info.mFile = getFile(info.mString);
+        } else {
+            System.out.println("6 - response is empty...");
+
+            info.mAudioUrl = "";
+            return false;
+        }
+        return true;
+    }
+
+    private static void waitServerReady(SentenceInfo sentenceInfo) {
+        for (int i = 0; i < 30; i++) {
+            try {
+                java.net.URL url = new URL(sentenceInfo.mStatusUrl);
+                HttpURLConnection urlConnection;
+                urlConnection = (HttpURLConnection) url.openConnection();
+                urlConnection.setReadTimeout(TIME_OUT);
+                urlConnection.setConnectTimeout(TIME_OUT);
+                int responseCode = urlConnection.getResponseCode();
+                StringBuilder response = new StringBuilder();
+
+                System.out.println("13 - responseCode : " + responseCode);
+
+                if (responseCode == HttpsURLConnection.HTTP_OK) {
+                    System.out.println("14 - HTTP_OK");
+
+                    String line;
+                    BufferedReader br = new BufferedReader(new InputStreamReader(
+                            urlConnection.getInputStream()));
+                    while ((line = br.readLine()) != null) {
+                        response.append(line);
+                    }
+                    br.close();
+                    try {
+                        System.out.println("6 - response !empty...");
+                        //
+                        JSONObject jRoot = new JSONObject(response.toString());
+
+                        String checkValue = jRoot.getString(STATUS_TAG);
+                        System.out.println(checkValue + "");
+
+                        if (EXISTS_VALUE.equals(checkValue)) {
+                            sentenceInfo.mStatus = SentenceInfo.STATUS.READY;
+                            return;
+                        }
+
+                    } catch (JSONException e) {
+                        // displayLoding(false);
+                        // e.printStackTrace();
+                        System.out.println("Error " + e.getMessage());
+                    }
+
+                }
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    private static String getFile(String string) {
+        // Check if media is mounted or storage is built-in, if so, try and use external cache dir
+        // otherwise use internal cache dir
+
+        return sCachePath + File.separator + DISK_CACHE_SUBDIR + File.separator + string.hashCode();
+    }
+
+    private static void downloadAudioFile(SentenceInfo mInfo) {
+        InputStream input = null;
+        OutputStream output = null;
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL(mInfo.mAudioUrl);
+            connection = (HttpURLConnection) url.openConnection();
+            connection.connect();
+            connection.setReadTimeout(TIME_OUT);
+
+            // expect HTTP 200 OK, so we don't mistakenly save error report
+            // instead of the file
+            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
+                System.out.println("Server returned HTTP " + connection.getResponseCode()
+                        + " " + connection.getResponseMessage());
+                return;
+            }
+
+            // this will be useful to display download percentage
+            // might be -1: server did not report the length
+            // int fileLength = connection.getContentLength();
+
+            // download the file
+            input = connection.getInputStream();
+            File file = new File(mInfo.mFile);
+            if (!file.exists())
+                file.getParentFile().mkdirs();
+            output = new FileOutputStream(mInfo.mFile);
+
+            byte[] data = new byte[4096];
+            int count;
+            while ((count = input.read(data)) != -1) {
+                // publishing the progress....
+                output.write(data, 0, count);
+            }
+            mInfo.mStatus = SentenceInfo.STATUS.DOWNLOADED;
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            try {
+                if (output != null)
+                    output.close();
+                if (input != null)
+                    input.close();
+            } catch (IOException ignored) {
+            }
+
+            if (connection != null)
+                connection.disconnect();
+        }
     }
 
     @Override
@@ -119,44 +320,10 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
         return mBinder;
     }
 
-    private AudioManager.OnAudioFocusChangeListener focusChangeListener =
-            new AudioManager.OnAudioFocusChangeListener() {
-                public void onAudioFocusChange(int focusChange) {
-                    switch (focusChange) {
-                        case (AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) :
-                            // Lower the volume while ducking.
-                            mPlayer.setVolume(0.2f, 0.2f);
-                            break;
-                        case (AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) :
-                        case (AudioManager.AUDIOFOCUS_LOSS) :
-                            pause();
-                            break;
-
-                        case (AudioManager.AUDIOFOCUS_GAIN) :
-                            // Return the volume to normal and resume if paused.
-                            mPlayer.setVolume(1f, 1f);
-                            play(new Intent());
-                            break;
-                        default: break;
-                    }
-                }
-            };
-
-    AudioAttributes playbackAttributes = new AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_MEDIA)
-            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-            .build();
-
-    AudioFocusRequest focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-            .setAudioAttributes(playbackAttributes)
-            .setAcceptsDelayedFocusGain(true)
-            .setOnAudioFocusChangeListener(focusChangeListener)
-            .build();
-
     @Override
     public void onCreate() {
         super.onCreate();
-        cachePath = Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState()) ||
+        sCachePath = Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState()) ||
                 !isExternalStorageRemovable() ? getApplicationContext().getExternalCacheDir().getPath() :
                 getApplicationContext().getCacheDir().getPath();
 
@@ -173,18 +340,11 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
 
     //phuong thuc khoi tao lop mediaplayer
     public void initMusicPlayer() {
-        AudioManager audioManager =(AudioManager)getSystemService(Context.AUDIO_SERVICE);
-        int result = audioManager.requestAudioFocus(focusRequest/*,
-                // Use the music stream.
-                AudioManager.STREAM_MUSIC,
-                // Request permanent focus.
-                AudioManager.AUDIOFOCUS_GAIN*/);
-
         mPlayer = new MediaPlayer();
         //cau hinh phat nhac bang cach thiet lap thuoc tinh
         mPlayer.setWakeMode(getApplicationContext(),
                 PowerManager.PARTIAL_WAKE_LOCK);
-        mPlayer.setAudioAttributes(playbackAttributes);
+        mPlayer.setAudioAttributes(mPlaybackAttributes);
         // thiet lap onprepare khi doi tuong mediaplayre duoc chuan bi
         mPlayer.setOnPreparedListener(this);
         //thiet lap khi bai hat da phat xong
@@ -247,7 +407,7 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
             return;
         }
 
-        System.out.println("seek to " + i + ": "+position);
+        System.out.println("seek to " + i + ": " + position);
         if (mPlayer.isPlaying())
             mPlayer.pause();
         mCurrentSpeech.mCurrentSentence = i;
@@ -295,16 +455,12 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
             return;
         }
 
-        if (!mPlayer.isPlaying()) return;
+        if (mPlayer == null || !mPlayer.isPlaying()) return;
 
         mCurrentSpeech.mCurrentTime = mPlayer.getCurrentPosition() * 1f / mPlayer.getDuration();
         mPlayer.pause();
         mNotificationController.updateNotification(mDefaultBitmap, "speech", false, FOREGROUND_ID);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_DETACH);
-        } else {
-            stopSelf();
-        }
+        stopForeground(STOP_FOREGROUND_DETACH);
     }
 
     private void play(Intent intent) {
@@ -330,17 +486,15 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
 
             speechInfo.mStatus = SpeechInfo.STATUS.LOADING;
             mCurrentSpeech = speechInfo;
-        } else if (mCurrentSpeech == null) {
+        } else if (mPlayer == null || mCurrentSpeech == null) {
             System.out.println("play - ERR null : ");
             return;
         }
 
-        AudioManager audioManager =(AudioManager)getSystemService(Context.AUDIO_SERVICE);
-        int result = audioManager.requestAudioFocus(focusRequest/*,
-                // Use the music stream.
-                AudioManager.STREAM_MUSIC,
-                // Request permanent focus.
-                AudioManager.AUDIOFOCUS_GAIN*/);
+        AudioManager audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        if (audioManager != null) {
+            audioManager.requestAudioFocus(mFocusRequest);
+        }
 
         SentenceInfo sentenceInfo = mCurrentSpeech.current();
 
@@ -411,7 +565,7 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
         intent.putExtra(DURATION_SENTENCE, mCurrentSpeech.current().mPlayTime);
         intent.putExtra(POSITION, position); // vi tri tren progress bar
         intent.putExtra(START_SENTENCE, startDuration); // vi tri tren progress bar
-        intent.putExtra(END_SENTENCE, startDuration  + mCurrentSpeech.current().mDuration); // vi tri tren progress bar
+        intent.putExtra(END_SENTENCE, startDuration + mCurrentSpeech.current().mDuration); // vi tri tren progress bar
         sendBroadcast(intent);
     }
 
@@ -428,10 +582,11 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
             mCurrentSpeech.mStatus = SpeechInfo.STATUS.PLAYABLE;
             mCurrentSpeech.mCurrentSentence = 0;
             mNotificationController.updateNotification(mDefaultBitmap, "speech", false, FOREGROUND_ID);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(STOP_FOREGROUND_DETACH);
-            } else {
-                stopSelf();
+            stopForeground(STOP_FOREGROUND_DETACH);
+
+            AudioManager audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            if (audioManager != null) {
+                audioManager.abandonAudioFocusRequest(mFocusRequest);
             }
         } else {
             mCurrentSpeech.mCurrentSentence = currentSentence;
@@ -453,19 +608,6 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
     @Override
     public boolean onError(MediaPlayer mp, int what, int extra) {
         return false;
-    }
-
-    @Override
-    public int onProcessFinish(SentenceInfo sentenceInfo) {
-        if (sentenceInfo.mOrder == mCurrentSpeech.mCurrentSentence) {
-            try {
-                checkFileAudioReady(sentenceInfo);
-            } catch (Exception e) {
-                e.printStackTrace();
-                return sentenceInfo.mOrder;
-            }
-        }
-        return mCurrentSpeech.mCurrentSentence;
     }
 
     private void checkFileAudioReady(SentenceInfo sentenceInfo) {
@@ -531,6 +673,13 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
         System.out.println("queryNextSentence new: " + mInfo.mString);
         mRequestSentenceTask = new RequestSentenceTask(mInfo, this);
         mRequestSentenceTask.execute();
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        mPlayer.stop();
+        mPlayer.release();
     }
 
     static class RequestSentenceTask extends
@@ -605,236 +754,12 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
         }
     }
 
-    private static boolean requestServer(SentenceInfo info) throws IOException, JSONException {
-        OutputStream out;
-
-        java.net.URL url = new URL(SERVER_URL);
-        HttpURLConnection urlConnection = (HttpURLConnection) url.openConnection();
-        urlConnection.setRequestMethod("POST");
-        urlConnection.setReadTimeout(TIME_OUT);
-        urlConnection.setConnectTimeout(TIME_OUT);
-        urlConnection.setDoInput(true);
-        urlConnection.setDoOutput(true);
-
-        urlConnection.setRequestProperty("Content-Type", "application/json");
-
-        JSONObject root = new JSONObject();
-        root.put(TEXT_TAG, info.mString);
-        String data = root.toString();
-
-        System.out.println("12 - urlConnection : " + urlConnection);
-        out = new BufferedOutputStream(urlConnection.getOutputStream());
-
-        BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(out, StandardCharsets.UTF_8));
-        writer.write(data);
-        writer.flush();
-        writer.close();
-        out.close();
-
-        // QuangNhe: Lấy dữ liệu trả về
-        int responseCode = urlConnection.getResponseCode();
-        StringBuilder response = new StringBuilder();
-
-        System.out.println("13 - responseCode : " + responseCode);
-
-        if (responseCode == HttpsURLConnection.HTTP_OK) {
-            System.out.println("14 - HTTP_OK");
-
-            String line;
-            BufferedReader br = new BufferedReader(new InputStreamReader(
-                    urlConnection.getInputStream()));
-            while ((line = br.readLine()) != null) {
-                response.append(line);
-            }
-            br.close();
-        }
-
-        if (!response.toString().equalsIgnoreCase("")) {
-            System.out.println("6 - response !empty...");
-            //
-            JSONObject jRoot = new JSONObject(response.toString());
-
-            info.mAudioUrl = jRoot.getString(LINK_AUDIO_TAG);
-            System.out.println(info.mAudioUrl + "");
-
-            info.mStatusUrl = jRoot.getString(STATUS_AUDIO_TAG);
-            System.out.println(info.mStatusUrl + "");
-
-            info.mFile = getFile(info.mString);
-        } else {
-            System.out.println("6 - response is empty...");
-
-            info.mAudioUrl = "";
-            return false;
-        }
-        return true;
-    }
-
-    @Override
-    public void onDestroy() {
-        super.onDestroy();
-        mPlayer.stop();
-        mPlayer.release();
-    }
-
-    static class WaitServerReadyTask extends
-            AsyncTask<Void, Void, Void> {
-        private SentenceInfo mInfo;
-        private RequestFinishCallback mCallback;
-
-        WaitServerReadyTask(SentenceInfo info, RequestFinishCallback mCallback) throws Exception {
-            if (info.isNeedRequest())
-                throw new Exception("mInfo.isNeedRequest");
-            this.mInfo = info;
-            this.mCallback = mCallback;
-        }
-
-        @Override
-        protected Void doInBackground(Void... voids) {
-            waitServerReady(mInfo);
-            return null;
-        }
-
-
-        @Override
-        protected void onPostExecute(Void sentenceInfo) {
-            super.onPostExecute(sentenceInfo);
-            mCallback.onAudioFileReady(mInfo);
-        }
-    }
-
-    private static void waitServerReady(SentenceInfo sentenceInfo) {
-        for (int i = 0; i < 30; i++) {
-            try {
-                java.net.URL url = new URL(sentenceInfo.mStatusUrl);
-                HttpURLConnection urlConnection = null;
-                urlConnection = (HttpURLConnection) url.openConnection();
-                urlConnection.setReadTimeout(TIME_OUT);
-                urlConnection.setConnectTimeout(TIME_OUT);
-                int responseCode = urlConnection.getResponseCode();
-                StringBuilder response = new StringBuilder();
-
-                System.out.println("13 - responseCode : " + responseCode);
-
-                if (responseCode == HttpsURLConnection.HTTP_OK) {
-                    System.out.println("14 - HTTP_OK");
-
-                    String line;
-                    BufferedReader br = new BufferedReader(new InputStreamReader(
-                            urlConnection.getInputStream()));
-                    while ((line = br.readLine()) != null) {
-                        response.append(line);
-                    }
-                    br.close();
-                    try {
-                        System.out.println("6 - response !empty...");
-                        //
-                        JSONObject jRoot = new JSONObject(response.toString());
-
-                        String checkValue = jRoot.getString(STATUS_TAG);
-                        System.out.println(checkValue + "");
-
-                        if (EXISTS_VALUE.equals(checkValue)) {
-                            sentenceInfo.mStatus = SentenceInfo.STATUS.READY;
-                            return;
-                        }
-
-                    } catch (JSONException e) {
-                        // displayLoding(false);
-                        // e.printStackTrace();
-                        System.out.println("Error " + e.getMessage());
-                    }
-
-                }
-                try {
-                    Thread.sleep(500);
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        }
-    }
-
-    private static final String DISK_CACHE_SUBDIR = "BITMAP_CACHE";
-
-    private static String getFile(String string) {
-        // Check if media is mounted or storage is built-in, if so, try and use external cache dir
-        // otherwise use internal cache dir
-
-        return cachePath + File.separator + DISK_CACHE_SUBDIR + File.separator + string.hashCode();
-    }
-
-
-    private static void downloadAudioFile(SentenceInfo mInfo) {
-        InputStream input = null;
-        OutputStream output = null;
-        HttpURLConnection connection = null;
-        try {
-            URL url = new URL(mInfo.mAudioUrl);
-            connection = (HttpURLConnection) url.openConnection();
-            connection.connect();
-            connection.setReadTimeout(TIME_OUT);
-
-            // expect HTTP 200 OK, so we don't mistakenly save error report
-            // instead of the file
-            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
-                System.out.println("Server returned HTTP " + connection.getResponseCode()
-                        + " " + connection.getResponseMessage());
-                return;
-            }
-
-            // this will be useful to display download percentage
-            // might be -1: server did not report the length
-            int fileLength = connection.getContentLength();
-
-            // download the file
-            input = connection.getInputStream();
-            File file = new File(mInfo.mFile);
-            if (!file.exists())
-                file.getParentFile().mkdirs();
-            output = new FileOutputStream(mInfo.mFile);
-
-            byte[] data = new byte[4096];
-            int count;
-            while ((count = input.read(data)) != -1) {
-                // publishing the progress....
-                output.write(data, 0, count);
-            }
-            mInfo.mStatus = SentenceInfo.STATUS.DOWNLOADED;
-        } catch (Exception e) {
-            e.printStackTrace();
-        } finally {
-            try {
-                if (output != null)
-                    output.close();
-                if (input != null)
-                    input.close();
-            } catch (IOException ignored) {
-            }
-
-            if (connection != null)
-                connection.disconnect();
-        }
-    }
-
-    public class LocalBinder extends Binder {
-        public SpeechManageService getService() {
-            return SpeechManageService.this;
-        }
-    }
-
     static class SpeechInfo {
         ArrayList<SentenceInfo> mArr;
         String url;
         int mCurrentSentence = 0;
         float mCurrentTime = 0;
         STATUS mStatus = STATUS.PLAYABLE;
-
-        enum STATUS {
-            PLAYABLE, LOADING, READING
-        }
 
         SpeechInfo(ArrayList<SentenceInfo> mArr, String url) {
             this.mArr = mArr;
@@ -848,6 +773,10 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
         SentenceInfo current() {
             return mArr.get(mCurrentSentence);
         }
+
+        enum STATUS {
+            PLAYABLE, LOADING, READING
+        }
     }
 
     static class SentenceInfo implements Serializable {
@@ -859,10 +788,6 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
         String mStatusUrl = "";
         String mFile;
         STATUS mStatus = STATUS.WAITING;
-
-        enum STATUS {
-            WAITING, READY, DOWNLOADED
-        }
 
         SentenceInfo(String mString, int order) {
             this.mString = mString;
@@ -878,6 +803,16 @@ public class SpeechManageService extends Service implements MediaPlayer.OnPrepar
 
         boolean isNeedRequest() {
             return TextUtils.isEmpty(mAudioUrl) || TextUtils.isEmpty(mStatusUrl);
+        }
+
+        enum STATUS {
+            WAITING, READY, DOWNLOADED
+        }
+    }
+
+    public class LocalBinder extends Binder {
+        public SpeechManageService getService() {
+            return SpeechManageService.this;
         }
     }
 }
